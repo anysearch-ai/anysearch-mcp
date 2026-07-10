@@ -180,6 +180,14 @@ For v1.x+ and v0.1.x+ (MCP key: `mcp`):
 
 For agents that only support stdio transport. Two proxy options:
 
+**Autohand Code** can register the recommended `mcp-remote` proxy while preserving AnySearch's required client header:
+
+```bash
+autohand mcp add anysearch -- npx -y mcp-remote https://api.anysearch.com/mcp --header "X-Anysearch-Client: mcp/1.0.0"
+```
+
+This uses anonymous access with lower rate limits. Add `--scope project` after `mcp add` to keep the registration in the current workspace. See [Autohand Code](https://github.com/autohandai/code-cli/) for current CLI details.
+
 #### Option A: mcp-remote (Recommended)
 
 [`mcp-remote`](https://github.com/geelen/mcp-remote) — auto-detects Streamable HTTP, simplest config:
