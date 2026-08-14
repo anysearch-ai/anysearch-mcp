@@ -98,6 +98,11 @@ AnySearch MCP server **natively supports Streamable HTTP** transport (MCP spec 2
 | **SSE** | Via proxy | Cursor, Windsurf |
 | **stdio** | Via proxy | Claude Desktop (legacy), VS Code Copilot, Cline |
 
+> **Node.js SDK clients**: if you connect with the official TypeScript MCP SDK
+> (`StreamableHTTPClientTransport`) from Node.js and your agent lists **no
+> AnySearch tools**, see [Troubleshooting](#troubleshooting) — the SSE stream
+> can stall `tools/list` behind it.
+
 ## Installation
 
 ### Streamable HTTP (Recommended — No Proxy Needed)
@@ -323,6 +328,76 @@ Then configure your agent:
 ```
 
 > The SSE proxy must remain running while the agent is active. Consider running it as a background service.
+
+## Troubleshooting
+
+### Streamable HTTP hangs with Node.js SDK clients (no tools listed)
+
+**Symptom**: the MCP connection and `initialize` handshake succeed, but the first `tools/list` request never returns, so the agent registers zero tools and reports the server has no tools.
+
+**Cause**: the official TypeScript MCP SDK opens a Server-Sent Events (SSE) GET stream after `initialize` to receive server push. Against AnySearch's CloudFront edge, Node.js `fetch` (undici) keeps that stream on a pooled connection and the subsequent `tools/list` POST is queued behind it indefinitely. Requests sent over fresh connections (curl, per-request HTTPS clients) complete normally — this is a connection-reuse interaction, not an API or authentication problem.
+
+**Workaround**: use the **stdio** transport via a small local bridge that forwards each request over a fresh HTTPS connection. The bridge must forward the `X-Anysearch-Client` and `Authorization` headers.
+
+Minimal bridge (`anysearch-bridge.mjs`, run with `node anysearch-bridge.mjs`):
+
+```js
+import https from "node:https";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+
+const ENDPOINT = "https://api.anysearch.com/mcp";
+const API_KEY = process.env.ANYSEARCH_API_KEY;
+
+function upstream(method, params) {
+  const url = new URL(ENDPOINT);
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params !== undefined ? { params } : {}) });
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: url.hostname, port: 443, path: url.pathname, method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "X-Anysearch-Client": "mcp/1.0.0",
+        Authorization: `Bearer ${API_KEY}`,
+        "Content-Length": Buffer.byteLength(body),
+      },
+      timeout: 30000,
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        parsed.error ? reject(new Error(JSON.stringify(parsed.error))) : resolve(parsed.result);
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("upstream timeout")));
+    req.end(body);
+  });
+}
+
+const server = new Server({ name: "anysearch-bridge", version: "1.0.0" }, { capabilities: { tools: {} } });
+server.setRequestHandler(ListToolsRequestSchema, async () => upstream("tools/list", {}));
+server.setRequestHandler(CallToolRequestSchema, async (req) =>
+  upstream("tools/call", { name: req.params.name, arguments: req.params.arguments ?? {} }));
+await server.connect(new StdioServerTransport());
+```
+
+Client config (e.g. Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "anysearch": {
+      "command": "node",
+      "args": ["/absolute/path/to/anysearch-bridge.mjs"],
+      "env": { "ANYSEARCH_API_KEY": "as_sk_..." }
+    }
+  }
+}
+```
 
 ## Agent Quick Reference
 
