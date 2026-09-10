@@ -50,20 +50,22 @@ Success response (`code: 0`) returns the account info and a one-time plaintext A
 }
 ```
 
+Quota fields such as `rate_limit` are account-specific response values; do not treat the example as a fixed plan.
+
 On success the agent MUST:
 
 1. Put `data.api_key.key` into the MCP server config as the `Authorization: Bearer <key>` value (and/or set `ANYSEARCH_API_KEY`) — it is shown only once (it can also be retrieved later from the dashboard).
 2. Tell the user their username (= email) and the `login_url`.
 
-Error handling (always `code: -1` on error; branch on the `message` string):
+Errors can be expressed through the HTTP status, application-level `code`, or `message`; do not assume every error uses `code: -1`:
 
-| message                           | what to do                                                                                          |
-| --------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `Invalid email address.`          | ask the user to re-enter the email                                                                  |
-| `email_already_registered`        | email is taken — tell the user to sign in at `login_url`; do **not** retry                          |
-| contains `Rate limited`           | read retry seconds from message (e.g. `"Rate limited, retry after 300 seconds."`), wait, then retry |
+| status / code / message | what to do |
+| ----------------------- | ---------- |
+| `Invalid email address.` | ask the user to re-enter the email |
+| HTTP `409` or `email_already_registered` | email is taken — tell the user to sign in at `login_url`; do **not** retry |
+| `code: 42901`, `rate_limited`, or contains `Rate limited` | prefer a retry delay from `Retry-After`, response data, or the message; if none is provided, stop repeated requests and retry later or use anonymous access |
 | starts with `Key creation failed.` | account created but key failed — extract the email and URL from the message (`"Key creation failed. Your account <email> was created; sign in at <url>."`) and tell the user to sign in there to create a key manually |
-| `Internal server error.`          | retry later or fall back to anonymous                                                               |
+| `Internal server error.` | retry later or fall back to anonymous |
 
 > The email **must be real and reachable**.
 
@@ -97,11 +99,11 @@ The production endpoint is:
 https://api.anysearch.com/mcp
 ```
 
-It natively uses **Streamable HTTP**. Current OpenCode, Claude Code, Cursor, VS Code, Windsurf, and Cline releases can connect to it directly; no SSE or stdio proxy is needed. The configurations below follow each client's current official documentation.
+It natively uses **Streamable HTTP**. Current OpenCode, Claude Code, Cursor, VS Code, Cline, OpenAI Codex, Google Antigravity, DeepSeek Harness, Hermes Agent, and OMP releases can connect to it directly; no SSE or stdio proxy is needed. The configurations below follow each client's current official documentation.
 
 ## Installation
 
-The API key is optional. In clients that support custom headers, the examples use the recommended authenticated setup. To use anonymous access, remove only the `Authorization` entry and keep `X-Anysearch-Client`.
+The API key is optional. Where a client documents environment-variable or secret storage for custom headers, the examples use the recommended authenticated setup. Where it does not, the example stays anonymous and explains how to add authentication only in private user configuration. To use anonymous access elsewhere, remove only the `Authorization` entry and keep `X-Anysearch-Client`.
 
 ### OpenCode
 
@@ -129,6 +131,8 @@ Use `~/.config/opencode/opencode.json` for a global configuration or `opencode.j
 
 OpenCode uses `{env:NAME}` for environment-variable substitution. `"oauth": false` prevents an unnecessary OAuth discovery flow for this API-key-authenticated server.
 
+After saving, run `opencode mcp list` and confirm that `anysearch` is shown as `connected`.
+
 ### Claude Code
 
 Official docs: [Connect Claude Code to tools via MCP](https://code.claude.com/docs/en/mcp).
@@ -136,10 +140,10 @@ Official docs: [Connect Claude Code to tools via MCP](https://code.claude.com/do
 For a private, user-wide installation, run:
 
 ```bash
-claude mcp add --transport http anysearch https://api.anysearch.com/mcp --scope user --header "Authorization: Bearer <your_api_key>" --header "X-Anysearch-Client: mcp/1.0.0"
+claude mcp add --transport http anysearch https://api.anysearch.com/mcp --scope user --header 'Authorization: Bearer ${ANYSEARCH_API_KEY}' --header 'X-Anysearch-Client: mcp/1.0.0'
 ```
 
-The `user` scope stores the server in `~/.claude.json` and makes it available across all projects on the machine. For anonymous access, omit the `Authorization` `--header` option.
+The `user` scope stores the server in `~/.claude.json` and makes it available across all projects on the machine. Single quotes preserve the variable reference so the plaintext key is not written to the config; set `ANYSEARCH_API_KEY` before starting Claude Code. For anonymous access, omit the `Authorization` `--header` option.
 
 For a shareable project configuration, create `.mcp.json` in the project root:
 
@@ -191,9 +195,16 @@ Use `.cursor/mcp.json` for a project or `~/.cursor/mcp.json` globally:
 
 Cursor automatically recognizes the remote HTTP endpoint and supports `${env:NAME}` interpolation in `url` and `headers`.
 
+Check the connection under **Customize > MCPs** or **Output > MCP Logs**. If Cursor CLI is installed, you can also run:
+
+```bash
+agent mcp list
+agent mcp list-tools anysearch
+```
+
 ### VS Code
 
-Official docs: [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
+Official docs: [Add and manage MCP servers](https://code.visualstudio.com/docs/agent-customization/mcp-servers) and [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration).
 
 Run **MCP: Open User Configuration** for a user-wide server, or create `.vscode/mcp.json` in a workspace. This example uses a password input so the key is prompted for and stored securely instead of being committed:
 
@@ -222,27 +233,7 @@ Run **MCP: Open User Configuration** for a user-wide server, or create `.vscode/
 
 For anonymous access, remove the `Authorization` entry and the entire `inputs` array.
 
-### Windsurf
-
-Official docs: [Cascade MCP integration](https://docs.devin.ai/windsurf/plugins/cascade/mcp).
-
-Open **Settings > Tools > Windsurf Settings > Add Server**, or edit `~/.codeium/mcp_config.json` via **View Raw Config**:
-
-```json
-{
-  "mcpServers": {
-    "anysearch": {
-      "serverUrl": "https://api.anysearch.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${env:ANYSEARCH_API_KEY}",
-        "X-Anysearch-Client": "mcp/1.0.0"
-      }
-    }
-  }
-}
-```
-
-Windsurf supports environment-variable interpolation in `serverUrl`, `url`, and `headers`. Refresh the MCP server list after saving.
+Run **MCP: List Servers**, select `anysearch`, then choose **Start** or **Show Output** to verify the connection. Note that `${input:...}` works in local VS Code, but servers requiring interactive input are not forwarded to Agent Host. For configurations shared with Agent Host or other Copilot tools, use a workspace `.mcp.json` or user `~/.copilot/mcp-config.json` and avoid interactive inputs.
 
 ### Cline
 
@@ -257,7 +248,7 @@ In the Cline panel, open **MCP Servers > Configure > Configure MCP Servers**, or
       "type": "streamableHttp",
       "url": "https://api.anysearch.com/mcp",
       "headers": {
-        "Authorization": "Bearer <your_api_key>",
+        "Authorization": "Bearer ${env:ANYSEARCH_API_KEY}",
         "X-Anysearch-Client": "mcp/1.0.0"
       },
       "disabled": false,
@@ -267,7 +258,108 @@ In the Cline panel, open **MCP Servers > Configure > Configure MCP Servers**, or
 }
 ```
 
-For Cline CLI, the config file is `~/.cline/mcp.json`; `cline mcp` opens the interactive MCP wizard.
+Cline IDE supports `${env:VAR}` in `url`, `headers`, and `env`. Run `cline mcp` to open the CLI wizard, or `cline config mcp --json` to list the configuration. The official web docs still name `~/.cline/mcp.json`, while the current source defaults to `~/.cline/data/settings/cline_mcp_settings.json`; use **Configure MCP Servers** in the IDE or the CLI wizard to open the effective file instead of relying on a hard-coded path.
+
+The following five entries were checked against first-party configuration documentation on 2026-08-27. This establishes documented client compatibility, not a local end-to-end connection certification.
+
+### OpenAI Codex
+
+Official docs: [Model Context Protocol](https://developers.openai.com/codex/mcp/).
+
+Use `~/.codex/config.toml` globally or `.codex/config.toml` in a trusted project. The Codex CLI, IDE extension, and desktop app share this configuration:
+
+```toml
+[mcp_servers.anysearch]
+url = "https://api.anysearch.com/mcp"
+bearer_token_env_var = "ANYSEARCH_API_KEY"
+http_headers = { "X-Anysearch-Client" = "mcp/1.0.0" }
+```
+
+Set `ANYSEARCH_API_KEY` before starting Codex. For anonymous access, remove `bearer_token_env_var`. Run `codex mcp list`, or use `/mcp` inside the Codex TUI, to confirm the server and its tools are available.
+
+### Google Antigravity
+
+Official docs: [MCP servers in Antigravity](https://antigravity.google/docs/ide/mcp).
+
+Use `~/.gemini/config/mcp_config.json` globally or `.agents/mcp_config.json` in a workspace. Remote servers must use `serverUrl`; the legacy `url` and `httpUrl` keys are not supported:
+
+```json
+{
+  "mcpServers": {
+    "anysearch": {
+      "serverUrl": "https://api.anysearch.com/mcp",
+      "headers": {
+        "X-Anysearch-Client": "mcp/1.0.0"
+      }
+    }
+  }
+}
+```
+
+Antigravity's official documentation currently shows literal custom-header values but does not document environment-variable interpolation for remote headers. If authentication is required, add `"Authorization": "Bearer YOUR_API_KEY"` only to the private global file and never commit it to `.agents/mcp_config.json`. Open **MCP Servers > Manage MCP Servers** in the IDE, or run `/mcp` in the CLI, to inspect live status, logs, and tools.
+
+### DeepSeek Harness
+
+Official sources: [DeepSeek Harness](https://www.deepseek.com/harness/en/) and [`@deepseek-ai/dsh-mcp-client`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md).
+
+DeepSeek Harness configures MCP through its first-party Cordis plugin rather than a standalone `mcp.json`. Merge this patch into `~/.dsh/profiles/web/cordis.patch.yml` (or the corresponding profile under `$DSH_HOME`):
+
+```yaml
+- insert:
+    - id: mcp-anysearch
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: anysearch
+        transport: streamable-http
+        url: "https://api.anysearch.com/mcp"
+        headers:
+          Authorization: !!js '`Bearer ${process.env.ANYSEARCH_API_KEY}`'
+          X-Anysearch-Client: "mcp/1.0.0"
+        failOnStartupError: true
+```
+
+Set `ANYSEARCH_API_KEY`, then run `npx @deepseek-ai/dsh --profile web --dump-config` to verify that the profile includes `mcp-anysearch` before starting it with `npx @deepseek-ai/dsh web`. The current MCP plugin exposes tools only; MCP resources and prompts are not yet supported. DeepSeek Harness is a developer preview, so recheck the linked plugin documentation when upgrading.
+
+### Hermes Agent
+
+Official docs: [MCP integration](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/mcp.md).
+
+Add the server to `$HERMES_HOME/config.yaml` and store `ANYSEARCH_API_KEY` in `$HERMES_HOME/.env` or the process environment. On macOS and Linux, `$HERMES_HOME` defaults to `~/.hermes`; the native Windows installer currently defaults to `%LOCALAPPDATA%\hermes`:
+
+```yaml
+mcp_servers:
+  anysearch:
+    url: "https://api.anysearch.com/mcp"
+    headers:
+      Authorization: "Bearer ${ANYSEARCH_API_KEY}"
+      X-Anysearch-Client: "mcp/1.0.0"
+```
+
+Verify it with `hermes mcp test anysearch` and `hermes mcp list`. After editing the configuration during a session, run `/reload-mcp` or start a new session.
+
+### OMP (Oh My Pi)
+
+Official docs: [MCP configuration](https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md).
+
+Use `.omp/mcp.json` in a project or `~/.omp/agent/mcp.json` globally:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "anysearch": {
+      "type": "http",
+      "url": "https://api.anysearch.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ANYSEARCH_API_KEY}",
+        "X-Anysearch-Client": "mcp/1.0.0"
+      }
+    }
+  }
+}
+```
+
+OMP expands `${VAR}` and `${VAR:-default}` in configuration values. Set `ANYSEARCH_API_KEY`, then run `/mcp reload`, `/mcp test anysearch`, and `/mcp list` inside OMP.
 
 ## Client Quick Reference
 
@@ -276,9 +368,13 @@ For Cline CLI, the config file is `~/.cline/mcp.json`; `cline mcp` opens the int
 | OpenCode | Remote MCP config | `~/.config/opencode/opencode.json` or project `opencode.json` | Yes |
 | Claude Code | Remote HTTP MCP | User `~/.claude.json` or project `.mcp.json` | Yes |
 | Cursor | Remote MCP config | `.cursor/mcp.json` or `~/.cursor/mcp.json` | Yes |
-| VS Code | HTTP MCP config | User MCP config or `.vscode/mcp.json` | Yes |
-| Windsurf | Remote HTTP MCP | `~/.codeium/mcp_config.json` | Yes |
-| Cline | Remote Streamable HTTP | Cline MCP settings or `~/.cline/mcp.json` | Yes |
+| VS Code | HTTP MCP config | Local user config or `.vscode/mcp.json`; Agent Host uses `.mcp.json` / `~/.copilot/mcp-config.json` | Yes |
+| Cline | Remote Streamable HTTP | Open the effective config through Cline IDE or CLI wizard | Yes |
+| OpenAI Codex | Remote MCP config | `~/.codex/config.toml` or trusted project `.codex/config.toml` | Yes |
+| Google Antigravity | Remote MCP config using `serverUrl` | `~/.gemini/config/mcp_config.json` or workspace `.agents/mcp_config.json` | Yes |
+| DeepSeek Harness | First-party MCP client plugin | `$DSH_HOME/profiles/<name>/cordis.patch.yml` | Yes |
+| Hermes Agent | Remote HTTP MCP | `$HERMES_HOME/config.yaml` | Yes |
+| OMP (Oh My Pi) | HTTP MCP config | `.omp/mcp.json` or `~/.omp/agent/mcp.json` | Yes |
 
 ## Available Tools
 
